@@ -1,0 +1,1246 @@
+---
+title: "Simulation model used in Self-administration of aspirin after chest pain for the prevention of premature cardiovascular mortality in the US: A population-based analysis"
+author: "Rienna Russo"
+date: "2023-02-01"
+output: html_document
+---
+
+The following code may be used to simulate a model for self-administration of aspirin and quantify deaths delayed from aspirin, deaths associated with bleeding, cost of aspirin, years of life saved, and cost of aspirin per years of life saved. This model was the basis for the results presented in the paper "Self-administration of aspirin after chest pain for the prevention of premature cardiovascular mortality in the US: A population-based analysis." See README file for more information on data sources and input parameter.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setting up necessary packages
+```{r}
+library(ggplot2)
+library(MASS)
+library(dplyr)
+library(kableExtra)
+library(glue)
+library(readxl)
+library(formattable)
+library(openxlsx)
+
+
+table2func<-function(mainest, low95, up95) {
+  glue("{mainest} ({low95}, {up95})")
+}
+
+
+knitr::opts_chunk$set(echo = TRUE)
+options(knitr.table.format = "latex")
+```
+
+
+# STEP 1: Simulated distributions for each parameter with uncertainty
+Sex-specific sensitivity, PPV of chestpain for MI, Aspirin RRR, and bleeding HR associated with aspirin uses
+```{r}
+# Sensitivity Men  - binomial distribution
+# sample size is from pooled samples from meta-analysis
+sensitivity_Men_normal<-rbinom(714758, size=10000, prob = 0.84)
+sensitivity_Men_normal<-sensitivity_Men_normal/10000
+#mean(sensitivity_Men_normal)
+
+# Sensitivity Women - binomial distribution
+# sample size is from pooled samples from meta-analysis
+sensitivity_Women_normal<-rbinom(508432, size=10000, prob = 0.79)
+sensitivity_Women_normal<-sensitivity_Women_normal/10000
+#mean(sensitivity_Women_normal)
+
+# Proportion of people receiving care within 4 hours
+care_4hrs<-rbinom(69781, size=10000, prob=0.685)
+care_4hrs<-care_4hrs/10000
+
+
+# PPV - binomial distribution
+ppv_dist<-rbinom(100387, size=10000, prob=0.1682)
+ppv_dist<-ppv_dist/10000
+#mean(ppv_dist)
+
+# PPV - binomial distribution
+ppv_US_dist<-rbinom(1393, size=10000, prob=0.1963)
+ppv_US_dist<-ppv_US_dist/10000
+#mean(ppv_dist)
+
+
+# Aspirin RRR - normal distribution
+aspirinEARLY_logRRR<-rnorm(n=10000, mean = log(0.25), sd=0.05339468) 
+#6/sqrt(17187) # standard error calculation from the standard deviation and sample size
+#abs((log(0.09)-log(0.41))/2)/1.96 # standard error calculation, assuming symmetric confidence intervals
+aspirinRRR.early<-exp(aspirinEARLY_logRRR)
+
+# Aspirin RRR - normal distribution
+aspirinLATE_logRRR<-rnorm(n=10000, mean = log(1-(1-0.25)/(1-0.21)), sd=0.04576687) 
+6/sqrt(17187) # standard error calculation
+aspirinRRR.late<-exp(aspirinLATE_logRRR)
+
+# Bleeding RR - normal distribution
+bleeding_logHR<-rnorm(n=10000, mean=log(1.47), sd=0.05886432)
+abs((log(1.31)-log(1.65))/2)/1.96 # standard error calculation, assuming symmetric confidence intervals
+
+
+```
+
+
+# STEP 2: Read in data from CSV files for the rest of the input parameters
+CSV files for MI incidence (age-sex specific, under three definitions of MI-related deaths), 28-day CFR (age-sex specific), bleeding mortality (age-sex specific), and population from US Census (age-sex specific).
+
+##    Read data from CSV
+```{r}
+# Read data from CSV
+data<-read.csv("MIcount.csv", header=FALSE, col.names = c("v1","v2","v3"))
+CFR<-read.csv("CFR.csv", header=FALSE)
+life_expect<-read.csv("life_expect.csv", header=FALSE)
+bleedingmortality<-read.csv("bleedingmortality.csv", header=FALSE)
+popdistribution<-read.csv("popdistribution.csv", header=FALSE)
+
+# Create a matrices for input
+MIcount<-as.matrix(data)
+MIcount_M<-MIcount[1:10,]
+MIcount_F<-MIcount[11:20,]
+colnames(MIcount) <- NULL
+
+```
+
+
+## Create empty data frames where we will store the estimates after sampling from distributions
+```{r}
+# MAIN Outcomes
+main_deathsdelayed_M<-matrix(NA, nrow=10000, ncol=10)
+main_bleedingdeaths_M<-matrix(NA, nrow=10000, ncol=10)
+main_netdeaths_M<-matrix(NA, nrow=10000, ncol=10)
+
+main_yols_M<-matrix(NA, nrow=10000, ncol=10)
+main_cost_M<-matrix(NA, nrow=10000, ncol=10)
+main_costperyear_M<-matrix(NA, nrow=10000, ncol=10)
+                          
+main_deathsdelayed_F<-matrix(NA, nrow=10000, ncol=10)
+main_bleedingdeaths_F<-matrix(NA, nrow=10000, ncol=10)
+main_netdeaths_F<-matrix(NA, nrow=10000, ncol=10)
+
+main_yols_F<-matrix(NA, nrow=10000, ncol=10)
+main_cost_F<-matrix(NA, nrow=10000, ncol=10)
+main_costperyear_F<-matrix(NA, nrow=10000, ncol=10)
+
+# Most Conservative (LOW)
+low_deathsdelayed_M<-matrix(NA, nrow=10000, ncol=10)
+low_bleedingdeaths_M<-matrix(NA, nrow=10000, ncol=10)
+low_netdeaths_M<-matrix(NA, nrow=10000, ncol=10)
+
+low_yols_M<-matrix(NA, nrow=10000, ncol=10)
+low_cost_M<-matrix(NA, nrow=10000, ncol=10)
+low_costperyear_M<-matrix(NA, nrow=10000, ncol=10)
+                      
+low_deathsdelayed_F<-matrix(NA, nrow=10000, ncol=10)
+low_bleedingdeaths_F<-matrix(NA, nrow=10000, ncol=10)
+low_netdeaths_F<-matrix(NA, nrow=10000, ncol=10)
+
+low_yols_F<-matrix(NA, nrow=10000, ncol=10)
+low_cost_F<-matrix(NA, nrow=10000, ncol=10)
+low_costperyear_F<-matrix(NA, nrow=10000, ncol=10)
+
+# Least Conservative (UP)
+up_deathsdelayed_M<-matrix(NA, nrow=10000, ncol=10)
+up_bleedingdeaths_M<-matrix(NA, nrow=10000, ncol=10)
+up_netdeaths_M<-matrix(NA, nrow=10000, ncol=10)
+
+up_yols_M<-matrix(NA, nrow=10000, ncol=10)
+up_cost_M<-matrix(NA, nrow=10000, ncol=10)
+up_costperyear_M<-matrix(NA, nrow=10000, ncol=10)
+             
+up_deathsdelayed_F<-matrix(NA, nrow=10000, ncol=10)
+up_bleedingdeaths_F<-matrix(NA, nrow=10000, ncol=10)
+up_netdeaths_F<-matrix(NA, nrow=10000, ncol=10)
+
+up_yols_F<-matrix(NA, nrow=10000, ncol=10)
+up_cost_F<-matrix(NA, nrow=10000, ncol=10)
+up_costperyear_F<-matrix(NA, nrow=10000, ncol=10)
+
+# Creating matrix for uncertainty 
+uncertainty_est<-matrix(NA, nrow=10, ncol=36)
+
+# Creating matrix for totals
+totals<-matrix(NA,nrow=10000, ncol=17)
+totals_low<-matrix(NA,nrow=10000, ncol=17)
+totals_up<-matrix(NA,nrow=10000, ncol=17)
+```
+
+## Monte Carlo - repeatedly sampling from our distributions
+```{r}
+# Sensitivity for males and females
+sens_M<-replicate(10000, sample(sensitivity_Men_normal, size = 1))
+sens_F<-replicate(10000, sample(sensitivity_Women_normal, size = 1))
+
+# Aspirin RRR on CFR
+aspirin.early<-replicate(10000, sample(aspirinRRR.early, size = 1))
+aspirin.late<-replicate(10000, sample(aspirinRRR.late, size = 1))
+
+# Positive predictive value
+ppv<-replicate(10000, sample(ppv_dist, size = 1))
+ppv_US<-replicate(10000, sample(ppv_US_dist, size = 1))
+
+
+# Bleeding risk for aspirin use
+bleeding<-replicate(10000, sample(bleeding_logHR, size = 1))
+
+# People who did not access care within 4 hours
+caredelayed<-replicate(10000, sample(care_4hrs, size=1))
+
+# People who used aspirin early
+early.aspirin<-0.976
+
+```
+
+
+# STEP 3A: US PPV
+```{r}
+
+for (i in 1:20) {
+      for (n in 1:10000) {    
+        M_group_2<-MIcount[i,2]*sens_M[n]*access.care[i]*(1-caredelayed[n])*early.aspirin
+        M_group_3<-MIcount[i,2]*sens_M[n]*access.care[i]*caredelayed[n]*(1-early.aspirin)
+        M_group_4<-MIcount[i,2]*sens_M[n]*access.care[i]*(1-caredelayed[n])*(1-early.aspirin)
+        M_group_5<-MIcount[i,2]*sens_M[n]*(1-access.care[i])
+        M_group_6<-(MIcount[i,2]*sens_M[n]-ppv_US[n])/ppv_US[n]
+          
+        F_group_2<-MIcount[i,2]*sens_F[n]*access.care[i]*(1-caredelayed[n])*early.aspirin
+        F_group_3<-MIcount[i,2]*sens_F[n]*access.care[i]*caredelayed[n]*(1-early.aspirin)
+        F_group_4<-MIcount[i,2]*sens_F[n]*access.care[i]*(1-caredelayed[n])*(1-early.aspirin)
+        F_group_5<-MIcount[i,2]*sens_F[n]*(1-access.care[i])
+        F_group_6<-(MIcount[i,2]*sens_F[n]-ppv_US[n])/ppv_US[n]
+        #chestpain_M<-(MIcount[i,2]*sens_M[n]*aspirinuse)+(((sens_M[n]*MIcount[i,2])-ppv[n])/ppv[n])
+        #chestpain_F<-(MIcount[i,2]*sens_F[n]*aspirinuse)+(((sens_F[n]*MIcount[i,2])-ppv[n])/ppv[n])
+
+        
+        bleedingrisk.early<-exp((bleeding[n]/331297.2273)*(325*28))*bleedingmortality[i,]
+        bleedingrisk.late<-exp((bleeding[n]/331297.2273)*(325*29))*bleedingmortality[i,]
+
+        bleedingrisk.noAMI<-exp((bleeding[n]/331297.2273)*(325*1))*bleedingmortality[i,]
+
+        #bleedingrisk<-bleeding[n]*bleedingmortality[i,]
+
+          if (i<=10) { # Males
+        
+            # Deaths Delayed
+            main_deathsdelayed_M[n,i]<-((M_group_2*CFR[i,]*aspirin.early[n])+(M_group_3*CFR[i,]*aspirin.late[n])+(M_group_4*CFR[i,]*aspirin.early[n])+(M_group_5*CFR[i,]*aspirin.early[n]))
+            
+            main_bleedingdeaths_M[n,i]<-(bleedingrisk.early*M_group_2)+(bleedingrisk.early*M_group_4)+(bleedingrisk.early*M_group_5)+(bleedingrisk.late*M_group_3)+(bleedingrisk.noAMI*M_group_6)
+            
+            main_netdeaths_M[n,i]<-main_deathsdelayed_M[n,i]-main_bleedingdeaths_M[n,i]
+            
+            #main_deathsdelayed_M[n,i]<-MIcount[i,2]*CFR[i,]*aspirin[n]*sens_M[n]*aspirinuse_M
+            #main_bleedingdeaths_M[n,i]<-bleedingrisk*chestpain_M
+            #main_netdeaths_M[n,i]<-main_deathsdelayed_M[n,i]-main_bleedingdeaths_M[n,i]
+            
+            # Cost Effectiveness
+            main_yols_M[n,i]<-main_netdeaths_M[n,i]*life_expect[i,]+life_expect[i,]*2.5
+            main_cost_M[n,i]<-((M_group_2+M_group_3+M_group_4+M_group_5)*0.1*28)+(M_group_6*0.1*1)
+            main_costperyear_M[n,i]<- main_cost_M[n,i]/main_yols_M[n,i]
+            
+          } else { # Females
+            
+        
+            main_deathsdelayed_F[n,i-10]<-(F_group_2*CFR[i,]*aspirin.early[n])+(F_group_3*CFR[i,]*aspirin.late[n])+(F_group_4*CFR[i,]*aspirin.early[n])+(F_group_5*CFR[i,]*aspirin.early[n])
+            
+            main_bleedingdeaths_F[n,i-10]<-(bleedingrisk.early*F_group_2)+(bleedingrisk.early*F_group_4)+(bleedingrisk.early*F_group_5)+(bleedingrisk.late*F_group_3)+(bleedingrisk.noAMI*F_group_6)
+            
+            main_netdeaths_F[n,i-10]<-main_deathsdelayed_F[n,i-10]-main_bleedingdeaths_F[n,i-10]
+            
+            #main_deathsdelayed_F[n,i]<-MIcount[i,2]*CFR[i,]*aspirin[n]*sens_F[n]*aspirinuse_F
+            #main_bleedingdeaths_F[n,i]<-bleedingrisk*chestpain_F
+            #main_netdeaths_F[n,i]<-main_deathsdelayed_F[n,i]-main_bleedingdeaths_F[n,i]
+            
+            # Cost Effectiveness
+            main_yols_F[n,i-10]<-main_netdeaths_F[n,i-10]*life_expect[i,]+life_expect[i,]*2.5
+            main_cost_F[n,i-10]<-(F_group_2+F_group_3+F_group_4+F_group_5)*0.1*28+(F_group_6*0.1*1)
+            main_costperyear_F[n,i-10]<- main_cost_F[n,i-10]/main_yols_F[n,i-10]
+          
+            
+          }
+         }
+        
+      
+      }
+
+```
+
+# STEP 3B: ALL PPV
+```{r}
+
+for (i in 1:20) {
+      for (n in 1:10000) {    
+        M_group_2<-MIcount[i,2]*sens_M[n]*access.care[i]*(1-caredelayed[n])*early.aspirin
+        M_group_3<-MIcount[i,2]*sens_M[n]*access.care[i]*caredelayed[n]*(1-early.aspirin)
+        M_group_4<-MIcount[i,2]*sens_M[n]*access.care[i]*(1-caredelayed[n])*(1-early.aspirin)
+        M_group_5<-MIcount[i,2]*sens_M[n]*(1-access.care[i])
+        M_group_6<-(MIcount[i,2]*sens_M[n]-ppv[n])/ppv[n]
+          
+        F_group_2<-MIcount[i,2]*sens_F[n]*access.care[i]*(1-caredelayed[n])*early.aspirin
+        F_group_3<-MIcount[i,2]*sens_F[n]*access.care[i]*caredelayed[n]*(1-early.aspirin)
+        F_group_4<-MIcount[i,2]*sens_F[n]*access.care[i]*(1-caredelayed[n])*(1-early.aspirin)
+        F_group_5<-MIcount[i,2]*sens_F[n]*(1-access.care[i])
+        F_group_6<-(MIcount[i,2]*sens_F[n]-ppv[n])/ppv[n]
+        #chestpain_M<-(MIcount[i,2]*sens_M[n]*aspirinuse)+(((sens_M[n]*MIcount[i,2])-ppv[n])/ppv[n])
+        #chestpain_F<-(MIcount[i,2]*sens_F[n]*aspirinuse)+(((sens_F[n]*MIcount[i,2])-ppv[n])/ppv[n])
+
+        
+        bleedingrisk.early<-exp((bleeding[n]/331297.2273)*(325*28))*bleedingmortality[i,]
+        bleedingrisk.late<-exp((bleeding[n]/331297.2273)*(325*29))*bleedingmortality[i,]
+
+        bleedingrisk.noAMI<-exp((bleeding[n]/331297.2273)*(325*1))*bleedingmortality[i,]
+
+        #bleedingrisk<-bleeding[n]*bleedingmortality[i,]
+
+          if (i<=10) { # Males
+        
+            # Deaths Delayed
+            main_deathsdelayed_M[n,i]<-((M_group_2*CFR[i,]*aspirin.early[n])+(M_group_3*CFR[i,]*aspirin.late[n])+(M_group_4*CFR[i,]*aspirin.early[n])+(M_group_5*CFR[i,]*aspirin.early[n]))
+            
+            main_bleedingdeaths_M[n,i]<-(bleedingrisk.early*M_group_2)+(bleedingrisk.early*M_group_4)+(bleedingrisk.early*M_group_5)+(bleedingrisk.late*M_group_3)+(bleedingrisk.noAMI*M_group_6)
+            
+            main_netdeaths_M[n,i]<-main_deathsdelayed_M[n,i]-main_bleedingdeaths_M[n,i]
+            
+            #main_deathsdelayed_M[n,i]<-MIcount[i,2]*CFR[i,]*aspirin[n]*sens_M[n]*aspirinuse_M
+            #main_bleedingdeaths_M[n,i]<-bleedingrisk*chestpain_M
+            #main_netdeaths_M[n,i]<-main_deathsdelayed_M[n,i]-main_bleedingdeaths_M[n,i]
+            
+            # Cost Effectiveness
+            main_yols_M[n,i]<-main_netdeaths_M[n,i]*life_expect[i,]+life_expect[i,]*2.5
+            main_cost_M[n,i]<-((M_group_2+M_group_3+M_group_4+M_group_5)*0.1*28)+(M_group_6*0.1*1)
+            main_costperyear_M[n,i]<- main_cost_M[n,i]/main_yols_M[n,i]
+            
+          } else { # Females
+            
+        
+            main_deathsdelayed_F[n,i-10]<-(F_group_2*CFR[i,]*aspirin.early[n])+(F_group_3*CFR[i,]*aspirin.late[n])+(F_group_4*CFR[i,]*aspirin.early[n])+(F_group_5*CFR[i,]*aspirin.early[n])
+            
+            main_bleedingdeaths_F[n,i-10]<-(bleedingrisk.early*F_group_2)+(bleedingrisk.early*F_group_4)+(bleedingrisk.early*F_group_5)+(bleedingrisk.late*F_group_3)+(bleedingrisk.noAMI*F_group_6)
+            
+            main_netdeaths_F[n,i-10]<-main_deathsdelayed_F[n,i-10]-main_bleedingdeaths_F[n,i-10]
+            
+            #main_deathsdelayed_F[n,i]<-MIcount[i,2]*CFR[i,]*aspirin[n]*sens_F[n]*aspirinuse_F
+            #main_bleedingdeaths_F[n,i]<-bleedingrisk*chestpain_F
+            #main_netdeaths_F[n,i]<-main_deathsdelayed_F[n,i]-main_bleedingdeaths_F[n,i]
+            
+            # Cost Effectiveness
+            main_yols_F[n,i-10]<-main_netdeaths_F[n,i-10]*life_expect[i,]+life_expect[i,]*2.5
+            main_cost_F[n,i-10]<-(F_group_2+F_group_3+F_group_4+F_group_5)*0.1*28+(F_group_6*0.1*1)
+            main_costperyear_F[n,i-10]<- main_cost_F[n,i-10]/main_yols_F[n,i-10]
+          
+            
+          }
+         }
+        
+      
+      }
+
+```
+
+# STEP 3C: Most Conservative
+```{r}
+
+for (i in 1:20) {
+      for (n in 1:10000) {    
+        M_group_2<-MIcount[i,1]*sens_M[n]*access.care[i]*(1-caredelayed[n])*early.aspirin
+        M_group_3<-MIcount[i,1]*sens_M[n]*access.care[i]*caredelayed[n]*(1-early.aspirin)
+        M_group_4<-MIcount[i,1]*sens_M[n]*access.care[i]*(1-caredelayed[n])*(1-early.aspirin)
+        M_group_5<-MIcount[i,1]*sens_M[n]*(1-access.care[i])
+        M_group_6<-(MIcount[i,1]*sens_M[n]-ppv[n])/ppv[n]
+          
+        F_group_2<-MIcount[i,1]*sens_F[n]*access.care[i]*(1-caredelayed[n])*early.aspirin
+        F_group_3<-MIcount[i,1]*sens_F[n]*access.care[i]*caredelayed[n]*(1-early.aspirin)
+        F_group_4<-MIcount[i,1]*sens_F[n]*access.care[i]*(1-caredelayed[n])*(1-early.aspirin)
+        F_group_5<-MIcount[i,1]*sens_F[n]*(1-access.care[i])
+        F_group_6<-(MIcount[i,1]*sens_F[n]-ppv[n])/ppv[n]
+
+        
+        bleedingrisk.early<-exp((bleeding[n]/331297.2273)*(325*28))*bleedingmortality[i,]
+        bleedingrisk.late<-exp((bleeding[n]/331297.2273)*(325*29))*bleedingmortality[i,]
+
+        bleedingrisk.noAMI<-exp((bleeding[n]/331297.2273)*(325*1))*bleedingmortality[i,]
+
+        #bleedingrisk<-bleeding[n]*bleedingmortality[i,]
+
+          if (i<=10) { # Males
+        
+            # Deaths Delayed
+            low_deathsdelayed_M[n,i]<-((M_group_2*CFR[i,]*aspirin.early[n])+(M_group_3*CFR[i,]*aspirin.late[n])+(M_group_4*CFR[i,]*aspirin.early[n])+(M_group_5*CFR[i,]*aspirin.early[n]))
+            
+            low_bleedingdeaths_M[n,i]<-(bleedingrisk.early*M_group_2)+(bleedingrisk.early*M_group_4)+(bleedingrisk.early*M_group_5)+(bleedingrisk.late*M_group_3)+(bleedingrisk.noAMI*M_group_6)
+            
+            low_netdeaths_M[n,i]<-low_deathsdelayed_M[n,i]-low_bleedingdeaths_M[n,i]
+            
+            #low_deathsdelayed_M[n,i]<-MIcount[i,2]*CFR[i,]*aspirin[n]*sens_M[n]*aspirinuse_M
+            #low_bleedingdeaths_M[n,i]<-bleedingrisk*chestpain_M
+            #low_netdeaths_M[n,i]<-low_deathsdelayed_M[n,i]-low_bleedingdeaths_M[n,i]
+            
+            # Cost Effectiveness
+            low_yols_M[n,i]<-low_netdeaths_M[n,i]*life_expect[i,]+life_expect[i,]*2.5
+            low_cost_M[n,i]<-((M_group_2+M_group_3+M_group_4+M_group_5)*0.1*28)+(M_group_6*0.1*1)
+            low_costperyear_M[n,i]<- low_cost_M[n,i]/low_yols_M[n,i]
+            
+          } else { # Females
+            
+        
+            low_deathsdelayed_F[n,i-10]<-(F_group_2*CFR[i,]*aspirin.early[n])+(F_group_3*CFR[i,]*aspirin.late[n])+(F_group_4*CFR[i,]*aspirin.early[n])+(F_group_5*CFR[i,]*aspirin.early[n])
+            
+            low_bleedingdeaths_F[n,i-10]<-(bleedingrisk.early*F_group_2)+(bleedingrisk.early*F_group_4)+(bleedingrisk.early*F_group_5)+(bleedingrisk.late*F_group_3)+(bleedingrisk.noAMI*F_group_6)
+            
+            low_netdeaths_F[n,i-10]<-low_deathsdelayed_F[n,i-10]-low_bleedingdeaths_F[n,i-10]
+            
+            #low_deathsdelayed_F[n,i]<-MIcount[i,2]*CFR[i,]*aspirin[n]*sens_F[n]*aspirinuse_F
+            #low_bleedingdeaths_F[n,i]<-bleedingrisk*chestpain_F
+            #low_netdeaths_F[n,i]<-low_deathsdelayed_F[n,i]-low_bleedingdeaths_F[n,i]
+            
+            # Cost Effectiveness
+            low_yols_F[n,i-10]<-low_netdeaths_F[n,i-10]*life_expect[i,]+life_expect[i,]*2.5
+            low_cost_F[n,i-10]<-(F_group_2+F_group_3+F_group_4+F_group_5)*0.1*28+(F_group_6*0.1*1)
+            low_costperyear_F[n,i-10]<- low_cost_F[n,i-10]/low_yols_F[n,i-10]
+          
+            
+          }
+         }
+        
+      
+      }
+```
+
+# STEP 3D: Least Conservative
+
+```{r}
+
+for (i in 1:20) {
+      for (n in 1:10000) {    
+        M_group_2<-MIcount[i,3]*sens_M[n]*access.care[i]*(1-caredelayed[n])*early.aspirin
+        M_group_3<-MIcount[i,3]*sens_M[n]*access.care[i]*caredelayed[n]*(1-early.aspirin)
+        M_group_4<-MIcount[i,3]*sens_M[n]*access.care[i]*(1-caredelayed[n])*(1-early.aspirin)
+        M_group_5<-MIcount[i,3]*sens_M[n]*(1-access.care[i])
+        M_group_6<-(MIcount[i,3]*sens_M[n]-ppv[n])/ppv[n]
+          
+        F_group_2<-MIcount[i,3]*sens_F[n]*access.care[i]*(1-caredelayed[n])*early.aspirin
+        F_group_3<-MIcount[i,3]*sens_F[n]*access.care[i]*caredelayed[n]*(1-early.aspirin)
+        F_group_4<-MIcount[i,3]*sens_F[n]*access.care[i]*(1-caredelayed[n])*(1-early.aspirin)
+        F_group_5<-MIcount[i,3]*sens_F[n]*(1-access.care[i])
+        F_group_6<-(MIcount[i,3]*sens_F[n]-ppv[n])/ppv[n]
+        #chestpain_M<-(MIcount[i,2]*sens_M[n]*aspirinuse)+(((sens_M[n]*MIcount[i,2])-ppv[n])/ppv[n])
+        #chestpain_F<-(MIcount[i,2]*sens_F[n]*aspirinuse)+(((sens_F[n]*MIcount[i,2])-ppv[n])/ppv[n])
+
+        
+        bleedingrisk.early<-exp((bleeding[n]/331297.2273)*(325*28))*bleedingmortality[i,]
+        bleedingrisk.late<-exp((bleeding[n]/331297.2273)*(325*29))*bleedingmortality[i,]
+
+        bleedingrisk.noAMI<-exp((bleeding[n]/331297.2273)*(325*1))*bleedingmortality[i,]
+
+        #bleedingrisk<-bleeding[n]*bleedingmortality[i,]
+
+          if (i<=10) { # Males
+        
+            # Deaths Delayed
+            up_deathsdelayed_M[n,i]<-((M_group_2*CFR[i,]*aspirin.early[n])+(M_group_3*CFR[i,]*aspirin.late[n])+(M_group_4*CFR[i,]*aspirin.early[n])+(M_group_5*CFR[i,]*aspirin.early[n]))
+            
+            up_bleedingdeaths_M[n,i]<-(bleedingrisk.early*M_group_2)+(bleedingrisk.early*M_group_4)+(bleedingrisk.early*M_group_5)+(bleedingrisk.late*M_group_3)+(bleedingrisk.noAMI*M_group_6)
+            
+            up_netdeaths_M[n,i]<-up_deathsdelayed_M[n,i]-up_bleedingdeaths_M[n,i]
+            
+            #up_deathsdelayed_M[n,i]<-MIcount[i,2]*CFR[i,]*aspirin[n]*sens_M[n]*aspirinuse_M
+            #up_bleedingdeaths_M[n,i]<-bleedingrisk*chestpain_M
+            #up_netdeaths_M[n,i]<-up_deathsdelayed_M[n,i]-up_bleedingdeaths_M[n,i]
+            
+            # Cost Effectiveness
+            up_yols_M[n,i]<-up_netdeaths_M[n,i]*life_expect[i,]+life_expect[i,]*2.5
+            up_cost_M[n,i]<-((M_group_2+M_group_3+M_group_4+M_group_5)*0.1*28)+(M_group_6*0.1*1)
+            up_costperyear_M[n,i]<- up_cost_M[n,i]/up_yols_M[n,i]
+            
+          } else { # Females
+            
+        
+            up_deathsdelayed_F[n,i-10]<-(F_group_2*CFR[i,]*aspirin.early[n])+(F_group_3*CFR[i,]*aspirin.late[n])+(F_group_4*CFR[i,]*aspirin.early[n])+(F_group_5*CFR[i,]*aspirin.early[n])
+            
+            up_bleedingdeaths_F[n,i-10]<-(bleedingrisk.early*F_group_2)+(bleedingrisk.early*F_group_4)+(bleedingrisk.early*F_group_5)+(bleedingrisk.late*F_group_3)+(bleedingrisk.noAMI*F_group_6)
+            
+            up_netdeaths_F[n,i-10]<-up_deathsdelayed_F[n,i-10]-up_bleedingdeaths_F[n,i-10]
+            
+            #up_deathsdelayed_F[n,i]<-MIcount[i,2]*CFR[i,]*aspirin[n]*sens_F[n]*aspirinuse_F
+            #up_bleedingdeaths_F[n,i]<-bleedingrisk*chestpain_F
+            #up_netdeaths_F[n,i]<-up_deathsdelayed_F[n,i]-up_bleedingdeaths_F[n,i]
+            
+            # Cost Effectiveness
+            up_yols_F[n,i-10]<-up_netdeaths_F[n,i-10]*life_expect[i,]+life_expect[i,]*2.5
+            up_cost_F[n,i-10]<-(F_group_2+F_group_3+F_group_4+F_group_5)*0.1*28+(F_group_6*0.1*1)
+            up_costperyear_F[n,i-10]<- up_cost_F[n,i-10]/up_yols_F[n,i-10]
+          
+            
+          }
+         }
+        
+      
+      }
+```
+
+
+# STEP 4: Calculating totals
+```{r}
+# Summing across ages and sex groups to get sex-specific and overall totals
+for (n in 1:10000) {
+    totals[n,1]<-sum(main_deathsdelayed_M[n,])
+    totals[n,2]<-sum(main_bleedingdeaths_M[n,])
+    totals[n,3]<-sum(main_netdeaths_M[n,])
+    totals[n,4]<-sum(main_yols_M[n,])
+    totals[n,5]<-sum(main_cost_M[n,])
+    totals[n,6]<-sum(main_costperyear_M[n,])
+    totals[n,7]<-sum(main_deathsdelayed_F[n,])
+    totals[n,8]<-sum(main_bleedingdeaths_F[n,])
+    totals[n,9]<-sum(main_netdeaths_F[n,])
+    totals[n,10]<-sum(main_yols_F[n,])
+    totals[n,11]<-sum(main_cost_F[n,])
+    totals[n,12]<-sum(main_costperyear_F[n,])
+
+    totals[n,13]<-sum(main_deathsdelayed_F[n,])+sum(main_deathsdelayed_M[n,])
+    totals[n,14]<-sum(main_bleedingdeaths_F[n,])+sum(main_bleedingdeaths_M[n,])
+    totals[n,15]<-sum(main_netdeaths_F[n,])+sum(main_netdeaths_M[n,])
+    totals[n,16]<-sum(main_yols_F[n,])+sum(main_yols_M[n,])
+    totals[n,17]<-sum(main_cost_F[n,])+sum(main_cost_M[n,])
+
+}
+
+
+
+colnames(totals)<- c("main_deathsdelayed_M", "main_bleedingdeaths_M", "main_netdeaths_M", "main_yols_M", "main_cost_M", "main_costperyear_M", "main_deathsdelayed_F", "main_bleedingdeaths_F", "main_netdeaths_F", "main_yols_F", "main_cost_F", "main_costperyear_F", "total_maindeathsdelayed", "total_mainbleedingdeaths", "total_mainnetdeaths", "total_mainYOLS", "total_maincost")
+
+
+```
+
+## Totals for Most conservative
+```{r}
+
+for (n in 1:10000) {
+    totals_low[n,1]<-sum(low_deathsdelayed_M[n,])
+    totals_low[n,2]<-sum(low_bleedingdeaths_M[n,])
+    totals_low[n,3]<-sum(low_netdeaths_M[n,])
+    totals_low[n,4]<-sum(low_yols_M[n,])
+    totals_low[n,5]<-sum(low_cost_M[n,])
+    totals_low[n,6]<-sum(low_costperyear_M[n,])
+    totals_low[n,7]<-sum(low_deathsdelayed_F[n,])
+    totals_low[n,8]<-sum(low_bleedingdeaths_F[n,])
+    totals_low[n,9]<-sum(low_netdeaths_F[n,])
+    totals_low[n,10]<-sum(low_yols_F[n,])
+    totals_low[n,11]<-sum(low_cost_F[n,])
+    totals_low[n,12]<-sum(low_costperyear_F[n,])
+
+    totals_low[n,13]<-sum(low_deathsdelayed_F[n,])+sum(low_deathsdelayed_M[n,])
+    totals_low[n,14]<-sum(low_bleedingdeaths_F[n,])+sum(low_bleedingdeaths_M[n,])
+    totals_low[n,15]<-sum(low_netdeaths_F[n,])+sum(low_netdeaths_M[n,])
+    totals_low[n,16]<-sum(low_yols_F[n,])+sum(low_yols_M[n,])
+    totals_low[n,17]<-sum(low_cost_F[n,])+sum(low_cost_M[n,])
+
+}
+
+
+
+colnames(totals_low)<- c("low_deathsdelayed_M", "low_bleedingdeaths_M", "low_netdeaths_M", "low_yols_M", "low_cost_M", "low_costperyear_M", "low_deathsdelayed_F", "low_bleedingdeaths_F", "low_netdeaths_F", "low_yols_F", "low_cost_F", "low_costperyear_F", "total_lowdeathsdelayed", "total_lowbleedingdeaths", "total_lownetdeaths", "total_lowYOLS", "total_lowcost")
+
+```
+
+
+## Totals for least conservative
+```{r}
+
+for (n in 1:10000) {
+    totals_up[n,1]<-sum(up_deathsdelayed_M[n,])
+    totals_up[n,2]<-sum(up_bleedingdeaths_M[n,])
+    totals_up[n,3]<-sum(up_netdeaths_M[n,])
+    totals_up[n,4]<-sum(up_yols_M[n,])
+    totals_up[n,5]<-sum(up_cost_M[n,])
+    totals_up[n,6]<-sum(up_costperyear_M[n,])
+    totals_up[n,7]<-sum(up_deathsdelayed_F[n,])
+    totals_up[n,8]<-sum(up_bleedingdeaths_F[n,])
+    totals_up[n,9]<-sum(up_netdeaths_F[n,])
+    totals_up[n,10]<-sum(up_yols_F[n,])
+    totals_up[n,11]<-sum(up_cost_F[n,])
+    totals_up[n,12]<-sum(up_costperyear_F[n,])
+
+    totals_up[n,13]<-sum(up_deathsdelayed_F[n,])+sum(up_deathsdelayed_M[n,])
+    totals_up[n,14]<-sum(up_bleedingdeaths_F[n,])+sum(up_bleedingdeaths_M[n,])
+    totals_up[n,15]<-sum(up_netdeaths_F[n,])+sum(up_netdeaths_M[n,])
+    totals_up[n,16]<-sum(up_yols_F[n,])+sum(up_yols_M[n,])
+    totals_up[n,17]<-sum(up_cost_F[n,])+sum(up_cost_M[n,])
+
+}
+
+
+
+colnames(totals_up)<- c("up_deathsdelayed_M", "up_bleedingdeaths_M", "up_netdeaths_M", "up_yols_M", "up_cost_M", "up_costperyear_M", "up_deathsdelayed_F", "up_bleedingdeaths_F", "up_netdeaths_F", "up_yols_F", "up_cost_F", "up_costperyear_F", "total_updeathsdelayed", "total_upbleedingdeaths", "total_upnetdeaths", "total_upYOLS", "total_upcost")
+```
+
+
+
+# STEP 5: Identifying point estimate and creating confidence intervals for main estimate
+Using the middle definition of MI-related deaths for our main estimate, we obtain the median, 2.5th, and 97.5th percentile of the distribution to obtain the point estimate and corresponding 95% CIs for Males, Females, and the Totals.
+
+
+## Point Estimates and CIs for Males
+```{r}
+# Males
+confintervals_M<-matrix(NA, nrow=10, ncol=18)
+
+for (i in 1:10) {
+  
+      confintervals_M[i,1]<-quantile(main_deathsdelayed_M[,i], 0.5)
+      confintervals_M[i,2]<-quantile(main_deathsdelayed_M[,i], 0.025)
+      confintervals_M[i,3]<-quantile(main_deathsdelayed_M[,i], 0.975)
+      
+      confintervals_M[i,4]<-quantile(main_bleedingdeaths_M[,i], 0.5)
+      confintervals_M[i,5]<-quantile(main_bleedingdeaths_M[,i], 0.025)
+      confintervals_M[i,6]<-quantile(main_bleedingdeaths_M[,i], 0.975)
+      
+      confintervals_M[i,7]<-quantile(main_netdeaths_M[,i],  0.5)
+      confintervals_M[i,8]<-quantile(main_netdeaths_M[,i], 0.025)
+      confintervals_M[i,9]<-quantile(main_netdeaths_M[,i], 0.975)
+    
+      confintervals_M[i,10]<-quantile(main_yols_M[,i],  0.5)
+      confintervals_M[i,11]<-quantile(main_yols_M[,i], 0.025)
+      confintervals_M[i,12]<-quantile(main_yols_M[,i], 0.975)
+      
+      confintervals_M[i,13]<-quantile(main_cost_M[,i],  0.5)
+      confintervals_M[i,14]<-quantile(main_cost_M[,i], 0.025)
+      confintervals_M[i,15]<-quantile(main_cost_M[,i], 0.975)
+      
+      confintervals_M[i,16]<-quantile(main_costperyear_M[,i],  0.5)
+      confintervals_M[i,17]<-quantile(main_costperyear_M[,i], 0.025)
+      confintervals_M[i,18]<-quantile(main_costperyear_M[,i], 0.975)      
+}
+  
+colnames(confintervals_M)<-c("Deaths_Delayed_main", "Deaths_Delayed_low", "Deaths_Delayed_up", "Bleeding_Deaths_main", "Bleeding_Deaths_low", "Bleeding_Deaths_up", "Net_main", "Net_low", "Net_up", "YOLS_main", "YOLS_low", "YOLS_up", "Cost_main", "Cost_low", "Cost_up", "CostperYOLS_main", "CostperYOLS_low", "CostperYOLS_up")
+
+#View(confintervals_M)
+```
+
+## Point Estimates and CIs for Females
+```{r}
+# Females
+confintervals_F<-matrix(NA, nrow=10, ncol=18)
+
+main_deathsdelayed_M
+for (i in 1:10) {
+      confintervals_F[i,1]<-quantile(main_deathsdelayed_F[,i], 0.5)
+      confintervals_F[i,2]<-quantile(main_deathsdelayed_F[,i], 0.025)
+      confintervals_F[i,3]<-quantile(main_deathsdelayed_F[,i], 0.975)
+      
+      confintervals_F[i,4]<-quantile(main_bleedingdeaths_F[,i], 0.5)
+      confintervals_F[i,5]<-quantile(main_bleedingdeaths_F[,i], 0.025)
+      confintervals_F[i,6]<-quantile(main_bleedingdeaths_F[,i], 0.975)
+      
+      confintervals_F[i,7]<-quantile(main_netdeaths_F[,i],  0.5)
+      confintervals_F[i,8]<-quantile(main_netdeaths_F[,i], 0.025)
+      confintervals_F[i,9]<-quantile(main_netdeaths_F[,i], 0.975)
+    
+      confintervals_F[i,10]<-quantile(main_yols_F[,i],  0.5)
+      confintervals_F[i,11]<-quantile(main_yols_F[,i], 0.025)
+      confintervals_F[i,12]<-quantile(main_yols_F[,i], 0.975)
+      
+      confintervals_F[i,13]<-quantile(main_cost_F[,i],  0.5)
+      confintervals_F[i,14]<-quantile(main_cost_F[,i], 0.025)
+      confintervals_F[i,15]<-quantile(main_cost_F[,i], 0.975)
+      
+      confintervals_F[i,16]<-quantile(main_costperyear_F[,i],  0.5)
+      confintervals_F[i,17]<-quantile(main_costperyear_F[,i], 0.025)
+      confintervals_F[i,18]<-quantile(main_costperyear_F[,i], 0.975)   
+}
+  
+colnames(confintervals_F)<-c("Deaths_Delayed_main", "Deaths_Delayed_low", "Deaths_Delayed_up", "Bleeding_Deaths_main", "Bleeding_Deaths_low", "Bleeding_Deaths_up", "Net_main", "Net_low", "Net_up", "YOLS_main", "YOLS_low", "YOLS_up", "Cost_main", "Cost_low", "Cost_up", "CostperYOLS_main", "CostperYOLS_low", "CostperYOLS_up")
+
+
+```
+
+## Totals for Males
+```{r}
+###############
+# Totals Male
+###############
+
+confintervals_total<-matrix(NA, nrow=10, ncol=18)
+
+# Deaths Delayed
+confintervals_total[2,1]<-quantile(totals[,"main_deathsdelayed_M"], 0.50)
+confintervals_total[2,2]<-quantile(totals[,"main_deathsdelayed_M"], 0.025)
+confintervals_total[2,3]<-quantile(totals[,"main_deathsdelayed_M"], 0.975)
+
+#Bleeding Deaths
+confintervals_total[2,4]<-quantile(totals[,"main_bleedingdeaths_M"], 0.50)
+confintervals_total[2,5]<-quantile(totals[,"main_bleedingdeaths_M"], 0.025)
+confintervals_total[2,6]<-quantile(totals[,"main_bleedingdeaths_M"], 0.975)
+
+#Net Deaths        
+confintervals_total[2,7]<-quantile(totals[,"main_netdeaths_M"], 0.50)
+confintervals_total[2,8]<-quantile(totals[,"main_netdeaths_M"], 0.025)
+confintervals_total[2,9]<-quantile(totals[,"main_netdeaths_M"], 0.975)
+         
+#YOLS       
+confintervals_total[2,10]<-quantile(totals[,"main_yols_M"], 0.50)
+confintervals_total[2,11]<-quantile(totals[,"main_yols_M"], 0.025)
+confintervals_total[2,12]<-quantile(totals[,"main_yols_M"], 0.975)
+
+#Cost       
+confintervals_total[2,13]<-quantile(totals[,"main_cost_M"], 0.50)
+confintervals_total[2,14]<-quantile(totals[,"main_cost_M"], 0.025)
+confintervals_total[2,15]<-quantile(totals[,"main_cost_M"], 0.975)
+
+
+#Cost per YOLS  - is to be a weighted sum so we have to account for the population distribution when calculating the total
+costperyear_sum<-matrix(NA, nrow=10, ncol=6)
+
+for (i in 1:10) {
+  costperyear_sum[i,1]<-(quantile(main_costperyear_M[,i], 0.50)*popdistribution[i,])
+}
+
+for (i in 1:10) {
+  costperyear_sum[i,2]<-quantile(main_costperyear_M[,i], 0.025)*popdistribution[i,]
+}
+
+for (i in 1:10) {
+  costperyear_sum[i,3]<-quantile(main_costperyear_M[,i], 0.975)*popdistribution[i,]
+}
+
+confintervals_total[2,16]<-sum(costperyear_sum[,1])/sum(popdistribution[1:10,])
+confintervals_total[2,17]<-sum(costperyear_sum[,2])/sum(popdistribution[1:10,])
+confintervals_total[2,18]<-sum(costperyear_sum[,3])/sum(popdistribution[1:10,])
+```
+
+## Totals for Females
+```{r}
+# Totals Female
+
+
+# Deaths Delayed
+confintervals_total[3,1]<-quantile(totals[,"main_deathsdelayed_F"], 0.5)
+confintervals_total[3,2]<-quantile(totals[,"main_deathsdelayed_F"], 0.025)
+confintervals_total[3,3]<-quantile(totals[,"main_deathsdelayed_F"], 0.975)
+
+#Bleeding Deaths
+confintervals_total[3,4]<-quantile(totals[,"main_bleedingdeaths_F"], 0.5)
+confintervals_total[3,5]<-quantile(totals[,"main_bleedingdeaths_F"], 0.025)
+confintervals_total[3,6]<-quantile(totals[,"main_bleedingdeaths_F"], 0.975)
+
+#Net Deaths    
+confintervals_total[3,7]<-quantile(totals[,"main_netdeaths_F"], 0.5)
+confintervals_total[3,8]<-quantile(totals[,"main_netdeaths_F"], 0.025)
+confintervals_total[3,9]<-quantile(totals[,"main_netdeaths_F"], 0.975)
+         
+#YOLS    
+confintervals_total[3,10]<-quantile(totals[,"main_yols_F"], 0.5)
+confintervals_total[3,11]<-quantile(totals[,"main_yols_F"], 0.025)
+confintervals_total[3,12]<-quantile(totals[,"main_yols_F"], 0.975)
+
+#Cost     
+confintervals_total[3,13]<-quantile(totals[,"main_cost_F"], 0.5)
+confintervals_total[3,14]<-quantile(totals[,"main_cost_F"], 0.025)
+confintervals_total[3,15]<-quantile(totals[,"main_cost_F"], 0.975)
+
+#Cost per YOLS  - is to be a weighted sum so we have to account for the population distribution when calculating the total      
+
+for (i in 11:20) {
+  costperyear_sum[i-10,4]<-(quantile(main_costperyear_F[,i-10], 0.50)*popdistribution[i,])
+}
+
+for (i in 11:20) {
+  costperyear_sum[i-10,5]<-quantile(main_costperyear_F[,i-10], 0.025)*popdistribution[i,]
+}
+
+for (i in 11:20) {
+  costperyear_sum[i-10,6]<-quantile(main_costperyear_F[,i-10], 0.975)*popdistribution[i,]
+}
+
+confintervals_total[3,16]<-sum(costperyear_sum[,4])/sum(popdistribution[11:20,])
+confintervals_total[3,17]<-sum(costperyear_sum[,5])/sum(popdistribution[11:20,])
+confintervals_total[3,18]<-sum(costperyear_sum[,6])/sum(popdistribution[11:20,])
+
+
+# OVERALL TOTALS  
+# Deaths Delayed
+confintervals_total[1,1]<-quantile(totals[,"total_maindeathsdelayed"], 0.5)
+confintervals_total[1,2]<-quantile(totals[,"total_maindeathsdelayed"], 0.025)
+confintervals_total[1,3]<-quantile(totals[,"total_maindeathsdelayed"], 0.975)
+
+#Bleeding Deaths
+confintervals_total[1,4]<-quantile(totals[,"total_mainbleedingdeaths"], 0.5)
+confintervals_total[1,5]<-quantile(totals[,"total_mainbleedingdeaths"], 0.025)
+confintervals_total[1,6]<-quantile(totals[,"total_mainbleedingdeaths"], 0.975)
+
+#Net Deaths       
+confintervals_total[1,7]<-quantile(totals[,"total_mainnetdeaths"], 0.5)
+confintervals_total[1,8]<-quantile(totals[,"total_mainnetdeaths"], 0.025)
+confintervals_total[1,9]<-quantile(totals[,"total_mainnetdeaths"], 0.975)
+
+#YOLS       
+confintervals_total[1,10]<-quantile(totals[,"total_mainYOLS"], 0.5)
+confintervals_total[1,11]<-quantile(totals[,"total_mainYOLS"], 0.025)
+confintervals_total[1,12]<-quantile(totals[,"total_mainYOLS"], 0.975)
+
+#Cost       
+confintervals_total[1,13]<-quantile(totals[,"total_maincost"], 0.5)
+confintervals_total[1,14]<-quantile(totals[,"total_maincost"], 0.025)
+confintervals_total[1,15]<-quantile(totals[,"total_maincost"], 0.975)
+
+#Cost per YOLS  - is to be a weighted sum so we have to account for the population distribution when calculating the total     
+confintervals_total[1,16]<-confintervals_total[1,13]/confintervals_total[1,10]
+confintervals_total[1,17]<-confintervals_total[1,14]/confintervals_total[1,11]
+confintervals_total[1,18]<-confintervals_total[1,15]/confintervals_total[1,12]
+
+confintervals_total[1,16]<-(sum(costperyear_sum[,4])+sum(costperyear_sum[,1]))/sum(popdistribution[1:20,])
+confintervals_total[1,17]<-(sum(costperyear_sum[,5])+sum(costperyear_sum[,2]))/sum(popdistribution[1:20,])
+confintervals_total[1,18]<-(sum(costperyear_sum[,6])+sum(costperyear_sum[,3]))/sum(popdistribution[1:20,])
+
+
+```
+
+
+
+
+## Most Conservative Point Estimates 
+```{r}
+# Males
+confintervals_M<-matrix(NA, nrow=10, ncol=18)
+
+for (i in 1:10) {
+  
+      confintervals_M[i,1]<-quantile(low_deathsdelayed_M[,i], 0.5)
+      confintervals_M[i,2]<-quantile(low_deathsdelayed_M[,i], 0.025)
+      confintervals_M[i,3]<-quantile(low_deathsdelayed_M[,i], 0.975)
+      
+      confintervals_M[i,4]<-quantile(low_bleedingdeaths_M[,i], 0.5)
+      confintervals_M[i,5]<-quantile(low_bleedingdeaths_M[,i], 0.025)
+      confintervals_M[i,6]<-quantile(low_bleedingdeaths_M[,i], 0.975)
+      
+      confintervals_M[i,7]<-quantile(low_netdeaths_M[,i],  0.5)
+      confintervals_M[i,8]<-quantile(low_netdeaths_M[,i], 0.025)
+      confintervals_M[i,9]<-quantile(low_netdeaths_M[,i], 0.975)
+    
+      confintervals_M[i,10]<-quantile(low_yols_M[,i],  0.5)
+      confintervals_M[i,11]<-quantile(low_yols_M[,i], 0.025)
+      confintervals_M[i,12]<-quantile(low_yols_M[,i], 0.975)
+      
+      confintervals_M[i,13]<-quantile(low_cost_M[,i],  0.5)
+      confintervals_M[i,14]<-quantile(low_cost_M[,i], 0.025)
+      confintervals_M[i,15]<-quantile(low_cost_M[,i], 0.975)
+      
+      confintervals_M[i,16]<-quantile(low_costperyear_M[,i],  0.5)
+      confintervals_M[i,17]<-quantile(low_costperyear_M[,i], 0.025)
+      confintervals_M[i,18]<-quantile(low_costperyear_M[,i], 0.975)      
+}
+  
+colnames(confintervals_M)<-c("Deaths_Delayed_low", "Deaths_Delayed_low", "Deaths_Delayed_low", "Bleeding_Deaths_low", "Bleeding_Deaths_low", "Bleeding_Deaths_low", "Net_low", "Net_low", "Net_low", "YOLS_low", "YOLS_low", "YOLS_low", "Cost_low", "Cost_low", "Cost_low", "CostperYOLS_low", "CostperYOLS_low", "CostperYOLS_low")
+
+
+# Females
+confintervals_F<-matrix(NA, nrow=10, ncol=18)
+
+
+for (i in 1:10) {
+      confintervals_F[i,1]<-quantile(low_deathsdelayed_F[,i], 0.5)
+      confintervals_F[i,2]<-quantile(low_deathsdelayed_F[,i], 0.025)
+      confintervals_F[i,3]<-quantile(low_deathsdelayed_F[,i], 0.975)
+      
+      confintervals_F[i,4]<-quantile(low_bleedingdeaths_F[,i], 0.5)
+      confintervals_F[i,5]<-quantile(low_bleedingdeaths_F[,i], 0.025)
+      confintervals_F[i,6]<-quantile(low_bleedingdeaths_F[,i], 0.975)
+      
+      confintervals_F[i,7]<-quantile(low_netdeaths_F[,i],  0.5)
+      confintervals_F[i,8]<-quantile(low_netdeaths_F[,i], 0.025)
+      confintervals_F[i,9]<-quantile(low_netdeaths_F[,i], 0.975)
+    
+      confintervals_F[i,10]<-quantile(low_yols_F[,i],  0.5)
+      confintervals_F[i,11]<-quantile(low_yols_F[,i], 0.025)
+      confintervals_F[i,12]<-quantile(low_yols_F[,i], 0.975)
+      
+      confintervals_F[i,13]<-quantile(low_cost_F[,i],  0.5)
+      confintervals_F[i,14]<-quantile(low_cost_F[,i], 0.025)
+      confintervals_F[i,15]<-quantile(low_cost_F[,i], 0.975)
+      
+      confintervals_F[i,16]<-quantile(low_costperyear_F[,i],  0.5)
+      confintervals_F[i,17]<-quantile(low_costperyear_F[,i], 0.025)
+      confintervals_F[i,18]<-quantile(low_costperyear_F[,i], 0.975)   
+}
+  
+colnames(confintervals_F)<-c("Deaths_Delayed_low", "Deaths_Delayed_low", "Deaths_Delayed_low", "Bleeding_Deaths_low", "Bleeding_Deaths_low", "Bleeding_Deaths_low", "Net_low", "Net_low", "Net_low", "YOLS_low", "YOLS_low", "YOLS_low", "Cost_low", "Cost_low", "Cost_low", "CostperYOLS_low", "CostperYOLS_low", "CostperYOLS_low")
+
+
+
+###############
+# Totals Male
+###############
+
+confintervals_total<-matrix(NA, nrow=10, ncol=18)
+View(totals_low)
+
+# Deaths Delayed
+confintervals_total[2,1]<-quantile(totals_low[,"low_deathsdelayed_M"], 0.50)
+confintervals_total[2,2]<-quantile(totals_low[,"low_deathsdelayed_M"], 0.025)
+confintervals_total[2,3]<-quantile(totals_low[,"low_deathsdelayed_M"], 0.975)
+
+#Bleeding Deaths
+confintervals_total[2,4]<-quantile(totals_low[,"low_bleedingdeaths_M"], 0.50)
+confintervals_total[2,5]<-quantile(totals_low[,"low_bleedingdeaths_M"], 0.025)
+confintervals_total[2,6]<-quantile(totals_low[,"low_bleedingdeaths_M"], 0.975)
+
+#Net Deaths        
+confintervals_total[2,7]<-quantile(totals_low[,"low_netdeaths_M"], 0.50)
+confintervals_total[2,8]<-quantile(totals_low[,"low_netdeaths_M"], 0.025)
+confintervals_total[2,9]<-quantile(totals_low[,"low_netdeaths_M"], 0.975)
+         
+#YOLS       
+confintervals_total[2,10]<-quantile(totals_low[,"low_yols_M"], 0.50)
+confintervals_total[2,11]<-quantile(totals_low[,"low_yols_M"], 0.025)
+confintervals_total[2,12]<-quantile(totals_low[,"low_yols_M"], 0.975)
+
+#Cost       
+confintervals_total[2,13]<-quantile(totals_low[,"low_cost_M"], 0.50)
+confintervals_total[2,14]<-quantile(totals_low[,"low_cost_M"], 0.025)
+confintervals_total[2,15]<-quantile(totals_low[,"low_cost_M"], 0.975)
+
+
+#Cost per YOLS  - is to be a weighted sum so we have to account for the population distribution when calculating the total
+costperyear_sum<-matrix(NA, nrow=10, ncol=6)
+
+for (i in 1:10) {
+  costperyear_sum[i,1]<-(quantile(low_costperyear_M[,i], 0.50)*popdistribution[i,])
+}
+
+for (i in 1:10) {
+  costperyear_sum[i,2]<-quantile(low_costperyear_M[,i], 0.025)*popdistribution[i,]
+}
+
+for (i in 1:10) {
+  costperyear_sum[i,3]<-quantile(low_costperyear_M[,i], 0.975)*popdistribution[i,]
+}
+
+confintervals_total[2,16]<-sum(costperyear_sum[,1])/sum(popdistribution[1:10,])
+confintervals_total[2,17]<-sum(costperyear_sum[,2])/sum(popdistribution[1:10,])
+confintervals_total[2,18]<-sum(costperyear_sum[,3])/sum(popdistribution[1:10,])
+
+# Totals Female
+
+
+# Deaths Delayed
+confintervals_total[3,1]<-quantile(totals_low[,"low_deathsdelayed_F"], 0.5)
+confintervals_total[3,2]<-quantile(totals_low[,"low_deathsdelayed_F"], 0.025)
+confintervals_total[3,3]<-quantile(totals_low[,"low_deathsdelayed_F"], 0.975)
+
+#Bleeding Deaths
+confintervals_total[3,4]<-quantile(totals_low[,"low_bleedingdeaths_F"], 0.5)
+confintervals_total[3,5]<-quantile(totals_low[,"low_bleedingdeaths_F"], 0.025)
+confintervals_total[3,6]<-quantile(totals_low[,"low_bleedingdeaths_F"], 0.975)
+
+#Net Deaths    
+confintervals_total[3,7]<-quantile(totals_low[,"low_netdeaths_F"], 0.5)
+confintervals_total[3,8]<-quantile(totals_low[,"low_netdeaths_F"], 0.025)
+confintervals_total[3,9]<-quantile(totals_low[,"low_netdeaths_F"], 0.975)
+         
+#YOLS    
+confintervals_total[3,10]<-quantile(totals_low[,"low_yols_F"], 0.5)
+confintervals_total[3,11]<-quantile(totals_low[,"low_yols_F"], 0.025)
+confintervals_total[3,12]<-quantile(totals_low[,"low_yols_F"], 0.975)
+
+#Cost     
+confintervals_total[3,13]<-quantile(totals_low[,"low_cost_F"], 0.5)
+confintervals_total[3,14]<-quantile(totals_low[,"low_cost_F"], 0.025)
+confintervals_total[3,15]<-quantile(totals_low[,"low_cost_F"], 0.975)
+
+#Cost per YOLS  - is to be a weighted sum so we have to account for the population distribution when calculating the total      
+
+for (i in 11:20) {
+  costperyear_sum[i-10,4]<-(quantile(low_costperyear_F[,i-10], 0.50)*popdistribution[i,])
+}
+
+for (i in 11:20) {
+  costperyear_sum[i-10,5]<-quantile(low_costperyear_F[,i-10], 0.025)*popdistribution[i,]
+}
+
+for (i in 11:20) {
+  costperyear_sum[i-10,6]<-quantile(low_costperyear_F[,i-10], 0.975)*popdistribution[i,]
+}
+
+confintervals_total[3,16]<-sum(costperyear_sum[,4])/sum(popdistribution[11:20,])
+confintervals_total[3,17]<-sum(costperyear_sum[,5])/sum(popdistribution[11:20,])
+confintervals_total[3,18]<-sum(costperyear_sum[,6])/sum(popdistribution[11:20,])
+
+
+# OVERALL TOTALS  
+# Deaths Delayed
+confintervals_total[1,1]<-quantile(totals_low[,"total_lowdeathsdelayed"], 0.5)
+confintervals_total[1,2]<-quantile(totals_low[,"total_lowdeathsdelayed"], 0.025)
+confintervals_total[1,3]<-quantile(totals_low[,"total_lowdeathsdelayed"], 0.975)
+
+#Bleeding Deaths
+confintervals_total[1,4]<-quantile(totals_low[,"total_lowbleedingdeaths"], 0.5)
+confintervals_total[1,5]<-quantile(totals_low[,"total_lowbleedingdeaths"], 0.025)
+confintervals_total[1,6]<-quantile(totals_low[,"total_lowbleedingdeaths"], 0.975)
+
+#Net Deaths       
+confintervals_total[1,7]<-quantile(totals_low[,"total_lownetdeaths"], 0.5)
+confintervals_total[1,8]<-quantile(totals_low[,"total_lownetdeaths"], 0.025)
+confintervals_total[1,9]<-quantile(totals_low[,"total_lownetdeaths"], 0.975)
+
+#YOLS       
+confintervals_total[1,10]<-quantile(totals_low[,"total_lowYOLS"], 0.5)
+confintervals_total[1,11]<-quantile(totals_low[,"total_lowYOLS"], 0.025)
+confintervals_total[1,12]<-quantile(totals_low[,"total_lowYOLS"], 0.975)
+
+#Cost       
+confintervals_total[1,13]<-quantile(totals_low[,"total_lowcost"], 0.5)
+confintervals_total[1,14]<-quantile(totals_low[,"total_lowcost"], 0.025)
+confintervals_total[1,15]<-quantile(totals_low[,"total_lowcost"], 0.975)
+
+#Cost per YOLS  - is to be a weighted sum so we have to account for the population distribution when calculating the total     
+confintervals_total[1,16]<-confintervals_total[1,13]/confintervals_total[1,10]
+confintervals_total[1,17]<-confintervals_total[1,14]/confintervals_total[1,11]
+confintervals_total[1,18]<-confintervals_total[1,15]/confintervals_total[1,12]
+
+confintervals_total[1,16]<-(sum(costperyear_sum[,4])+sum(costperyear_sum[,1]))/sum(popdistribution[1:20,])
+confintervals_total[1,17]<-(sum(costperyear_sum[,5])+sum(costperyear_sum[,2]))/sum(popdistribution[1:20,])
+confintervals_total[1,18]<-(sum(costperyear_sum[,6])+sum(costperyear_sum[,3]))/sum(popdistribution[1:20,])
+
+
+```
+
+
+## Least Conservative Point Estimates 
+```{r}
+# Males
+confintervals_M<-matrix(NA, nrow=10, ncol=18)
+
+for (i in 1:10) {
+  
+      confintervals_M[i,1]<-quantile(up_deathsdelayed_M[,i], 0.5)
+      confintervals_M[i,2]<-quantile(up_deathsdelayed_M[,i], 0.025)
+      confintervals_M[i,3]<-quantile(up_deathsdelayed_M[,i], 0.975)
+      
+      confintervals_M[i,4]<-quantile(up_bleedingdeaths_M[,i], 0.5)
+      confintervals_M[i,5]<-quantile(up_bleedingdeaths_M[,i], 0.025)
+      confintervals_M[i,6]<-quantile(up_bleedingdeaths_M[,i], 0.975)
+      
+      confintervals_M[i,7]<-quantile(up_netdeaths_M[,i],  0.5)
+      confintervals_M[i,8]<-quantile(up_netdeaths_M[,i], 0.025)
+      confintervals_M[i,9]<-quantile(up_netdeaths_M[,i], 0.975)
+    
+      confintervals_M[i,10]<-quantile(up_yols_M[,i],  0.5)
+      confintervals_M[i,11]<-quantile(up_yols_M[,i], 0.025)
+      confintervals_M[i,12]<-quantile(up_yols_M[,i], 0.975)
+      
+      confintervals_M[i,13]<-quantile(up_cost_M[,i],  0.5)
+      confintervals_M[i,14]<-quantile(up_cost_M[,i], 0.025)
+      confintervals_M[i,15]<-quantile(up_cost_M[,i], 0.975)
+      
+      confintervals_M[i,16]<-quantile(up_costperyear_M[,i],  0.5)
+      confintervals_M[i,17]<-quantile(up_costperyear_M[,i], 0.025)
+      confintervals_M[i,18]<-quantile(up_costperyear_M[,i], 0.975)      
+}
+  
+colnames(confintervals_M)<-c("Deaths_Delayed_up", "Deaths_Delayed_low", "Deaths_Delayed_up", "Bleeding_Deaths_up", "Bleeding_Deaths_low", "Bleeding_Deaths_up", "Net_up", "Net_low", "Net_up", "YOLS_up", "YOLS_low", "YOLS_up", "Cost_up", "Cost_low", "Cost_up", "CostperYOLS_up", "CostperYOLS_low", "CostperYOLS_up")
+
+
+# Females
+confintervals_F<-matrix(NA, nrow=10, ncol=18)
+
+
+for (i in 1:10) {
+      confintervals_F[i,1]<-quantile(up_deathsdelayed_F[,i], 0.5)
+      confintervals_F[i,2]<-quantile(up_deathsdelayed_F[,i], 0.025)
+      confintervals_F[i,3]<-quantile(up_deathsdelayed_F[,i], 0.975)
+      
+      confintervals_F[i,4]<-quantile(up_bleedingdeaths_F[,i], 0.5)
+      confintervals_F[i,5]<-quantile(up_bleedingdeaths_F[,i], 0.025)
+      confintervals_F[i,6]<-quantile(up_bleedingdeaths_F[,i], 0.975)
+      
+      confintervals_F[i,7]<-quantile(up_netdeaths_F[,i],  0.5)
+      confintervals_F[i,8]<-quantile(up_netdeaths_F[,i], 0.025)
+      confintervals_F[i,9]<-quantile(up_netdeaths_F[,i], 0.975)
+    
+      confintervals_F[i,10]<-quantile(up_yols_F[,i],  0.5)
+      confintervals_F[i,11]<-quantile(up_yols_F[,i], 0.025)
+      confintervals_F[i,12]<-quantile(up_yols_F[,i], 0.975)
+      
+      confintervals_F[i,13]<-quantile(up_cost_F[,i],  0.5)
+      confintervals_F[i,14]<-quantile(up_cost_F[,i], 0.025)
+      confintervals_F[i,15]<-quantile(up_cost_F[,i], 0.975)
+      
+      confintervals_F[i,16]<-quantile(up_costperyear_F[,i],  0.5)
+      confintervals_F[i,17]<-quantile(up_costperyear_F[,i], 0.025)
+      confintervals_F[i,18]<-quantile(up_costperyear_F[,i], 0.975)   
+}
+  
+colnames(confintervals_F)<-c("Deaths_Delayed_up", "Deaths_Delayed_low", "Deaths_Delayed_up", "Bleeding_Deaths_up", "Bleeding_Deaths_low", "Bleeding_Deaths_up", "Net_up", "Net_low", "Net_up", "YOLS_up", "YOLS_low", "YOLS_up", "Cost_up", "Cost_low", "Cost_up", "CostperYOLS_up", "CostperYOLS_low", "CostperYOLS_up")
+
+
+
+###############
+# Totals Male
+###############
+
+confintervals_total<-matrix(NA, nrow=10, ncol=18)
+View(totals_up)
+
+# Deaths Delayed
+confintervals_total[2,1]<-quantile(totals_up[,"up_deathsdelayed_M"], 0.50)
+confintervals_total[2,2]<-quantile(totals_up[,"up_deathsdelayed_M"], 0.025)
+confintervals_total[2,3]<-quantile(totals_up[,"up_deathsdelayed_M"], 0.975)
+
+#Bleeding Deaths
+confintervals_total[2,4]<-quantile(totals_up[,"up_bleedingdeaths_M"], 0.50)
+confintervals_total[2,5]<-quantile(totals_up[,"up_bleedingdeaths_M"], 0.025)
+confintervals_total[2,6]<-quantile(totals_up[,"up_bleedingdeaths_M"], 0.975)
+
+#Net Deaths        
+confintervals_total[2,7]<-quantile(totals_up[,"up_netdeaths_M"], 0.50)
+confintervals_total[2,8]<-quantile(totals_up[,"up_netdeaths_M"], 0.025)
+confintervals_total[2,9]<-quantile(totals_up[,"up_netdeaths_M"], 0.975)
+         
+#YOLS       
+confintervals_total[2,10]<-quantile(totals_up[,"up_yols_M"], 0.50)
+confintervals_total[2,11]<-quantile(totals_up[,"up_yols_M"], 0.025)
+confintervals_total[2,12]<-quantile(totals_up[,"up_yols_M"], 0.975)
+
+#Cost       
+confintervals_total[2,13]<-quantile(totals_up[,"up_cost_M"], 0.50)
+confintervals_total[2,14]<-quantile(totals_up[,"up_cost_M"], 0.025)
+confintervals_total[2,15]<-quantile(totals_up[,"up_cost_M"], 0.975)
+
+
+#Cost per YOLS  - is to be a weighted sum so we have to account for the population distribution when calculating the total
+costperyear_sum<-matrix(NA, nrow=10, ncol=6)
+
+for (i in 1:10) {
+  costperyear_sum[i,1]<-(quantile(up_costperyear_M[,i], 0.50)*popdistribution[i,])
+}
+
+for (i in 1:10) {
+  costperyear_sum[i,2]<-quantile(up_costperyear_M[,i], 0.025)*popdistribution[i,]
+}
+
+for (i in 1:10) {
+  costperyear_sum[i,3]<-quantile(up_costperyear_M[,i], 0.975)*popdistribution[i,]
+}
+
+confintervals_total[2,16]<-sum(costperyear_sum[,1])/sum(popdistribution[1:10,])
+confintervals_total[2,17]<-sum(costperyear_sum[,2])/sum(popdistribution[1:10,])
+confintervals_total[2,18]<-sum(costperyear_sum[,3])/sum(popdistribution[1:10,])
+
+# Totals Female
+
+
+# Deaths Delayed
+confintervals_total[3,1]<-quantile(totals_up[,"up_deathsdelayed_F"], 0.5)
+confintervals_total[3,2]<-quantile(totals_up[,"up_deathsdelayed_F"], 0.025)
+confintervals_total[3,3]<-quantile(totals_up[,"up_deathsdelayed_F"], 0.975)
+
+#Bleeding Deaths
+confintervals_total[3,4]<-quantile(totals_up[,"up_bleedingdeaths_F"], 0.5)
+confintervals_total[3,5]<-quantile(totals_up[,"up_bleedingdeaths_F"], 0.025)
+confintervals_total[3,6]<-quantile(totals_up[,"up_bleedingdeaths_F"], 0.975)
+
+#Net Deaths    
+confintervals_total[3,7]<-quantile(totals_up[,"up_netdeaths_F"], 0.5)
+confintervals_total[3,8]<-quantile(totals_up[,"up_netdeaths_F"], 0.025)
+confintervals_total[3,9]<-quantile(totals_up[,"up_netdeaths_F"], 0.975)
+         
+#YOLS    
+confintervals_total[3,10]<-quantile(totals_up[,"up_yols_F"], 0.5)
+confintervals_total[3,11]<-quantile(totals_up[,"up_yols_F"], 0.025)
+confintervals_total[3,12]<-quantile(totals_up[,"up_yols_F"], 0.975)
+
+#Cost     
+confintervals_total[3,13]<-quantile(totals_up[,"up_cost_F"], 0.5)
+confintervals_total[3,14]<-quantile(totals_up[,"up_cost_F"], 0.025)
+confintervals_total[3,15]<-quantile(totals_up[,"up_cost_F"], 0.975)
+
+#Cost per YOLS  - is to be a weighted sum so we have to account for the population distribution when calculating the total      
+
+for (i in 11:20) {
+  costperyear_sum[i-10,4]<-(quantile(up_costperyear_F[,i-10], 0.50)*popdistribution[i,])
+}
+
+for (i in 11:20) {
+  costperyear_sum[i-10,5]<-quantile(up_costperyear_F[,i-10], 0.025)*popdistribution[i,]
+}
+
+for (i in 11:20) {
+  costperyear_sum[i-10,6]<-quantile(up_costperyear_F[,i-10], 0.975)*popdistribution[i,]
+}
+
+confintervals_total[3,16]<-sum(costperyear_sum[,4])/sum(popdistribution[11:20,])
+confintervals_total[3,17]<-sum(costperyear_sum[,5])/sum(popdistribution[11:20,])
+confintervals_total[3,18]<-sum(costperyear_sum[,6])/sum(popdistribution[11:20,])
+
+
+# OVERALL TOTALS  
+# Deaths Delayed
+confintervals_total[1,1]<-quantile(totals_up[,"total_updeathsdelayed"], 0.5)
+confintervals_total[1,2]<-quantile(totals_up[,"total_updeathsdelayed"], 0.025)
+confintervals_total[1,3]<-quantile(totals_up[,"total_updeathsdelayed"], 0.975)
+
+#Bleeding Deaths
+confintervals_total[1,4]<-quantile(totals_up[,"total_upbleedingdeaths"], 0.5)
+confintervals_total[1,5]<-quantile(totals_up[,"total_upbleedingdeaths"], 0.025)
+confintervals_total[1,6]<-quantile(totals_up[,"total_upbleedingdeaths"], 0.975)
+
+#Net Deaths       
+confintervals_total[1,7]<-quantile(totals_up[,"total_upnetdeaths"], 0.5)
+confintervals_total[1,8]<-quantile(totals_up[,"total_upnetdeaths"], 0.025)
+confintervals_total[1,9]<-quantile(totals_up[,"total_upnetdeaths"], 0.975)
+
+#YOLS       
+confintervals_total[1,10]<-quantile(totals_up[,"total_upYOLS"], 0.5)
+confintervals_total[1,11]<-quantile(totals_up[,"total_upYOLS"], 0.025)
+confintervals_total[1,12]<-quantile(totals_up[,"total_upYOLS"], 0.975)
+
+#Cost       
+confintervals_total[1,13]<-quantile(totals_up[,"total_upcost"], 0.5)
+confintervals_total[1,14]<-quantile(totals_up[,"total_upcost"], 0.025)
+confintervals_total[1,15]<-quantile(totals_up[,"total_upcost"], 0.975)
+
+#Cost per YOLS  - is to be a weighted sum so we have to account for the population distribution when calculating the total     
+confintervals_total[1,16]<-confintervals_total[1,13]/confintervals_total[1,10]
+confintervals_total[1,17]<-confintervals_total[1,14]/confintervals_total[1,11]
+confintervals_total[1,18]<-confintervals_total[1,15]/confintervals_total[1,12]
+
+confintervals_total[1,16]<-(sum(costperyear_sum[,4])+sum(costperyear_sum[,1]))/sum(popdistribution[1:20,])
+confintervals_total[1,17]<-(sum(costperyear_sum[,5])+sum(costperyear_sum[,2]))/sum(popdistribution[1:20,])
+confintervals_total[1,18]<-(sum(costperyear_sum[,6])+sum(costperyear_sum[,3]))/sum(popdistribution[1:20,])
+
+
+```
+
+# STEP 4: Creating a data table to export with formatting and rounding 
+ 
+```{r}
+########
+confintervals_M_r<-trimws(cbind(format(round(confintervals_M[,1:15], digits=0), big.mark=","), format(round(confintervals_M[,16:18], digits=2), nsmall=2)))
+
+confintervals_F_r<-trimws(cbind(format(round(confintervals_F[,1:15], digits=0), big.mark=","), format(round(confintervals_F[,16:18], digits=2), nsmall=2)))
+
+confintervals_total_r<-trimws(cbind(format(round(confintervals_total[,1:15], digits=0), big.mark=","), format(round(confintervals_total[,16:18], digits=2), nsmall=2)))
+
+main_table<-rbind(confintervals_M_r, confintervals_total_r[2,], confintervals_F_r, confintervals_total_r[3,], confintervals_total_r[1,])
+
+colnames(main_table)<-c("Deaths_Delayed_main", "Deaths_Delayed_low", "Deaths_Delayed_up", "Bleeding_Deaths_main", "Bleeding_Deaths_low", "Bleeding_Deaths_up", "Net_main", "Net_low", "Net_up", "YOLS_main", "YOLS_low", "YOLS_up", "Cost_main", "Cost_low", "Cost_up", "CostperYOLS_main", "CostperYOLS_low", "CostperYOLS_up")
+
+table2<-matrix(NA, nrow=23, ncol=7)
+
+n<-1
+for (i in 2:7) {
+  table2[,i]<-table2func(main_table[,n], main_table[,n+1], main_table[,n+2])
+  n<-n+3
+}
+
+
+colnames(table2)<- c("Age Groups", "Annual deaths delayed*",	"Annual excess bleeding deaths†",	"Annual net deaths delayed",	"Years of life saved",	"Cost of aspirin pills ($)",	"Cost of saving one year of life ($/Year)")
+
+table2[,1]<-c("40 to 44", "45 to 49", "50 to 54", "55 to 59", "60 to 64", "65 to 69", "70 to 74", "75 to 79", "80 to 84", "85 plus", "Men Total", "40 to 44", "45 to 49", "50 to 54", "55 to 59", "60 to 64", "65 to 69", "70 to 74", "75 to 79", "80 to 84", "85 plus", "Women Total", "Total")
+
+View(table2)
+
+```
+
+
+
+
